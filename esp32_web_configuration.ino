@@ -5,6 +5,9 @@
 #include <DHT.h>
 #include <Wire.h>
 #include <SSD1306Wire.h>
+#include "FS.h"
+#include "SD_MMC.h"
+#include <TimeLib.h>
 
 #define DHTPIN      27
 #define DHTTYPE     DHT11
@@ -26,6 +29,7 @@
 #define AT_LOCATION 9
 #define AT_IP_CHK   10
 #define AT_COPS     11
+#define AT_CCLK     12
 
 
 String commands[] = {
@@ -40,7 +44,8 @@ String commands[] = {
   "AT+GPS=0",
   "AT+LOCATION=2",
   "AT+CGDCONT?",
-  "AT+COPS?"
+  "AT+COPS?",
+  "AT+CCLK?"
 };
 DHT dht(DHTPIN, DHTTYPE);
 SoftwareSerial gsmSerial(33, 32);
@@ -58,11 +63,13 @@ String location = "00.0000,00.0000", ip_addr = "0.0.0.0", device_id = "", server
 uint8_t old_cmd_gsm = 0, csq = 0, httpget_time = 0;
 bool next_cmd = true, waitHttpAction = false, star_project = false, device_lost = 0;
 bool internet = false, httpinit = false, checked_internet = false, queue_stop = 0, httpget_url2 = 0;
-uint32_t per_hour_time = 0, message_count = 0;
+uint32_t per_hour_time = 0, message_count = 0, httpget_count = 0, failure_pockets = 0;
 uint8_t _counter_httpget = 0;
 String sopn[] = {"Buztel", "Uzmacom", "UzMobile", "Beeline", "Ucell", "Perfectum", "UMS", "UzMobile", "EVO"};
 uint16_t mcc_code[] = {43401, 43402, 43403, 43404, 43405, 43406, 43407, 43408, 43409}, cops = 0;
 int water_cntn = 0, v_percent = 0, fix_length = 0;
+String file_name = "", date_time = "";
+bool sdmmc_detect = 0;
 
 String params = "["
   "{"
@@ -197,7 +204,7 @@ float fmap(float x, float in_min, float in_max, float out_min, float out_max) {
 }
 
 String make_api() {
-  return ("?id=" + device_id + "&location={" + location + "}&data=" + String(conf.table_values[distance + fix_length]) + "&temperature=" + String(tmp) + "&humidity=" + String(hmt) + "&power=" + String(voltage));
+  return ("?id=" + device_id + "&location={" + location + "}&data=" + String(water_cntn) + "&temperature=" + String(tmp) + "&humidity=" + String(hmt) + "&power=" + String(voltage));
 }
 
 void drawProgressBar(int progress) {
@@ -223,6 +230,12 @@ void delay_progress (uint32_t tm, uint32_t td) {
   }
 }
 
+void appendFile(fs::FS &fs, const char * path, const char * message){
+    File file = fs.open(path, FILE_APPEND);
+    file.println(message);
+    file.close();
+}
+
 void setup() {
   Serial.begin(115200);
   gsmSerial.begin(9600);
@@ -245,15 +258,24 @@ void setup() {
     delay_progress(2000, 200);
     checkCommandGSM();
   }
+//  while(!sdmmc_detect) {
+//    sdmmc_detect = SD_MMC.begin();
+//    if (sdmmc_detect) {
+//      Serial.println("Card Mounted");
+//      break;
+//    }
+//    delay_progress(1000, 200);
+//  }
+//  appendFile(SD_MMC, "hello.txt", "Hello World!");
   Serial.println("Start.");
   delay_progress(1000, 200);
   queue.init();
   queue.addQueue(commands[AT_CHK], AT_CHK);
   queue.addQueue(commands[AT_CSQ], AT_CSQ);
   queue.addQueue(commands[AT_COPS], AT_COPS);
-  queue.addQueue(commands[AT_NET_OFF], AT_NET_OFF);
+//  queue.addQueue(commands[AT_NET_OFF], AT_NET_OFF);
   queue.addQueue(commands[AT_APN], AT_APN);
-//  queue.addQueue(commands[AT_NET_ON], AT_NET_ON);
+  queue.addQueue(commands[AT_CCLK], AT_CCLK);
   queue.addQueue(commands[AT_NET_CHK], AT_NET_CHK);
 //  queue.addQueue(commands[AT_GPS_OFF], AT_GPS_OFF);
   queue.addQueue(commands[AT_GPS_ON], AT_GPS_ON);
@@ -344,40 +366,36 @@ void loop() {
     conf.setStatistics(1, "<a href=https://maps.google.com?q="+location + ">"+location+"</a>");                        // 1 - index Location
     conf.setStatistics(2, ip_addr);                         // 2 - index IP
     conf.setStatistics(3, String(message_count));           // 3 - index Counter
-    conf.setStatistics(4, String(tmp) + "C");
-    conf.setStatistics(5, String(hmt) + "%");
+    conf.setStatistics(4, String(tmp) + " C°");
+    conf.setStatistics(5, String(hmt) + " %");
     conf.setStatistics(6, String(v_percent) + "%");
     int dbm = map(csq, 0, 31, -113, -51);
-    conf.setStatistics(7, String(dbm) + "dBm");
-    conf.setStatistics(8, String(water_cntn) + "T/m");
-    conf.setStatistics(9, String(water_level) + "cm");
+    conf.setStatistics(7, String(dbm) + " dBm");
+    conf.setStatistics(8, String(water_cntn) + " T/s");
+    conf.setStatistics(9, String(water_level) + " cm");
     if (next_cmd && !waitHttpAction && !queue_stop) {
       queue.addQueue(commands[AT_CSQ], AT_CSQ);
       queue.addQueue(commands[AT_NET_CHK], AT_NET_CHK);
+      queue.addQueue(commands[AT_CCLK], AT_CCLK);
       if (ip_addr == "0.0.0.0") queue.addQueue(commands[AT_IP_CHK], AT_IP_CHK);
       queue.addQueue(commands[AT_LOCATION], AT_LOCATION);
-    }
-//    if (!internet) {
-//      queue.addQueue(commands[AT_NET_OFF], AT_NET_OFF);
-//      queue.addQueue(commands[AT_APN], AT_APN);
-//      queue.addQueue(commands[AT_NET_ON], AT_NET_ON);
-//    }
-    if (_counter_httpget >= httpget_time && !queue_stop) {
-      queue.addQueue(commands[AT_NET_ON], AT_NET_ON);
-      _counter_httpget = 0;
-    }
-    if (internet) {
-      char temporary[300];
-      if (httpget_url2) {
+      if (!internet) {
         queue.addQueue(commands[AT_NET_OFF], AT_NET_OFF);
-        httpget_url2 = 0;
-      } else {
-        sprintf(temporary, commands[AT_HTTPGET].c_str(), (server_url + make_api()).c_str());
-        queue.addQueue(String(temporary), AT_HTTPGET);
-        sprintf(temporary, commands[AT_HTTPGET].c_str(), (server_url2 + make_api()).c_str());
-        queue.addQueue(String(temporary), AT_HTTPGET);
-        httpget_url2 = 1;
+        queue.addQueue(commands[AT_APN], AT_APN);
+        queue.addQueue(commands[AT_NET_ON], AT_NET_ON);
       }
+    }
+    if (_counter_httpget >= httpget_time && !queue_stop && internet) {
+      char temporary[300];
+      sprintf(temporary, commands[AT_HTTPGET].c_str(), (server_url + make_api()).c_str());
+      queue.addQueue(String(temporary), AT_HTTPGET);
+      sprintf(temporary, commands[AT_HTTPGET].c_str(), (server_url2 + make_api()).c_str());
+      queue.addQueue(String(temporary), AT_HTTPGET);
+      if (sdmmc_detect && file_name.length() > 1) {
+//        appendFile(SD_MMC, file_name.c_str(), make_api().c_str());
+      }
+      _counter_httpget = 0;
+      httpget_count ++;
     }
     vcounter = 0;
     voltage = 0;
@@ -393,8 +411,11 @@ void loop() {
       distance = 0;
     }
     water_level = float(distance/10.0) + float(fix_length);
+    distance = 0;
     if (water_level > 0 && water_level < 500) {
       water_cntn = conf.table_values[int(water_level)];
+    } else {
+      water_cntn = 0;
     }
   }
   // navbatni bo'shatish
@@ -462,6 +483,10 @@ void check_CMD (String str) {
     waitHttpAction = 0;
     return;
   }
+  else if (str.indexOf("")) {
+    failure_pockets ++;
+  }
+
   else if (str.indexOf("OK") >= 0 || str.indexOf("+CME") >= 0) {
     next_cmd = true;
     star_project = true;
@@ -473,6 +498,10 @@ void check_CMD (String str) {
     return;
   } else if (str.indexOf("NO SIM CARD") >= 0) {
     queue_stop = true;
+  } else if (str.indexOf("+CCLK:") >= 0) {
+    file_name = str.substring(str.indexOf("\"") + 1, str.indexOf(",") - 3);
+    file_name.replace('/', '-');
+    file_name = "/" + file_name + ".txt";
   }
 }
 
@@ -500,8 +529,9 @@ void display_update() {
     display.drawString(64, 0, get_ops(cops));
   }
   display.drawString(32, 44, "(M)");
-  display.drawString(96, 44, "(T/m)");
-  display.drawString(96, 54, "MC:" + String(message_count));
+  display.drawString(96, 44, "(T/s)");
+  display.drawString(32, 54, "MC:" + String(httpget_count));
+  display.drawString(96, 54, "HC:" + String(message_count));
   display.setFont(ArialMT_Plain_24);
   display.drawString(32, 20, String(float(water_level)/100.0));
   display.drawString(96, 20, String(water_cntn));
