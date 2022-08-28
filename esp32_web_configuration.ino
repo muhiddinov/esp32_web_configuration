@@ -1,3 +1,9 @@
+/*********************************************************
+ * ESP32 WROOM va AI Thinker A9G module bilan birgalikda
+ * rivojlantirilgan plata suv xo'jaligi uchun xizmat qiladi.
+ ********************************************************
+*/ 
+
 #include <WebServer.h>
 #include "WebConfig.h"
 #include "images.h"
@@ -8,6 +14,8 @@
 #include "FS.h"
 #include "SD_MMC.h"
 #include <TimeLib.h>
+
+#define DEBUG_SERIAL
 
 #define DHTPIN      27
 #define DHTTYPE     DHT11
@@ -58,7 +66,7 @@ byte readLevel [8] = {0x01, 0x03, 0x00, 0x06, 0x00, 0x01, 0x64, 0x0B};
 uint32_t persecond_time = 0, permill_time = 0;
 uint16_t distance = 0;
 float voltage = 0.0, tmp = 0.0, hmt = 0.0, water_level = 0.0;
-uint32_t vcounter = 0, curtime_http = 0;
+uint32_t vcounter = 0, curtime_http = 0, res_counter = 0;
 String location = "00.0000,00.0000", ip_addr = "0.0.0.0", device_id = "", server_url = "", server_url2 = "";
 uint8_t old_cmd_gsm = 0, csq = 0, httpget_time = 0;
 bool next_cmd = true, waitHttpAction = false, star_project = false, device_lost = 0;
@@ -69,7 +77,7 @@ String sopn[] = {"Buztel", "Uzmacom", "UzMobile", "Beeline", "Ucell", "Perfectum
 uint16_t mcc_code[] = {43401, 43402, 43403, 43404, 43405, 43406, 43407, 43408, 43409}, cops = 0;
 int water_cntn = 0, v_percent = 0, fix_length = 0;
 String file_name = "", date_time = "";
-bool sdmmc_detect = 0;
+bool sdmmc_detect = 0, bad_request = 0;
 
 String params = "["
   "{"
@@ -237,7 +245,9 @@ void appendFile(fs::FS &fs, const char * path, const char * message){
 }
 
 void setup() {
+#ifdef DEBUG_SERIAL
   Serial.begin(115200);
+#endif
   gsmSerial.begin(9600);
   RS485Serial.begin(9600);
   display.init();
@@ -252,7 +262,9 @@ void setup() {
   digitalWrite(GSMP_PIN, HIGH);
   delay_progress(3000, 200);
   digitalWrite(GSMP_PIN, LOW);
+#ifdef DEBUG_SERIAL
   Serial.println("Wait for GSM modem...");
+#endif
   while (!star_project) {
     gsmSerial.println("AT");
     delay_progress(2000, 200);
@@ -267,7 +279,9 @@ void setup() {
 //    delay_progress(1000, 200);
 //  }
 //  appendFile(SD_MMC, "hello.txt", "Hello World!");
+#ifdef DEBUG_SERIAL
   Serial.println("Start.");
+#endif
   delay_progress(1000, 200);
   queue.init();
   queue.addQueue(commands[AT_CHK], AT_CHK);
@@ -302,8 +316,10 @@ void setup() {
   server_url = conf.getString("server_url");
   server_url2 = conf.getString("server_url2");
   WiFi.softAP(conf.getValue("ssid"), conf.getValue("pwd"));
+#ifdef DEBUG_SERIAL
   Serial.print("WebServer IP-Adress = ");
   Serial.println(WiFi.softAPIP());
+#endif
   delay_progress(1000, 200);
   server.on("/config", configRoot);
   server.on("/", HTTP_GET, handleRoot);
@@ -423,6 +439,13 @@ void loop() {
     curtime_http = millis();
     queue.sendCmdQueue();
   }
+  // bad request 
+  if (bad_request) {
+    gsm_init();
+  }
+  if (star_project) {
+    queue_stop = 0;
+  }
   checkCommandGSM();
 //  if (Serial.available()) {
 //    gsmSerial.println(Serial.readString());
@@ -430,6 +453,56 @@ void loop() {
 //  if (gsmSerial.available()) {
 //    Serial.print(char(gsmSerial.read()));
 //  }
+}
+
+void gsm_init () {
+  digitalWrite(GSMR_PIN, 1);
+  delay(5000);
+  digitalWrite( GSMR_PIN, 0);
+  digitalWrite(GSMP_PIN, 1);
+  delay(3000);
+  digitalWrite(GSMP_PIN, 0);
+  String sdata = "";
+  res_counter += 1;
+  uint32_t send_data_time = millis();
+  while (!star_project)
+  {
+    if (millis() - send_data_time > 1000) {
+#ifdef DEBUG_SERIAL
+      gsmSerial.println("AT");
+      Serial.println("AT");
+#endif
+      send_data_time = millis();
+    }
+    if (gsmSerial.available()) {
+      char a = gsmSerial.read();
+      if (a != '\n') {
+        sdata += a;
+      } else {
+        if (sdata.length() > 1) {
+#ifdef DEBUG_SERIAL
+          Serial.println(sdata);
+#endif
+          if (sdata.indexOf("OK") >= 0 || sdata.indexOf("READY") >= 0 || sdata.indexOf("+CME") >= 0) {
+            star_project = 1;
+            bad_request = 0;
+            break;
+          }
+        }
+        sdata = "";
+      }
+    }
+  }
+  queue.addQueue(commands[AT_CHK], AT_CHK);
+  queue.addQueue(commands[AT_CSQ], AT_CSQ);
+  queue.addQueue(commands[AT_COPS], AT_COPS);
+  queue.addQueue(commands[AT_NET_OFF], AT_NET_OFF);
+  queue.addQueue(commands[AT_APN], AT_APN);
+  queue.addQueue(commands[AT_CCLK], AT_CCLK);
+  queue.addQueue(commands[AT_NET_CHK], AT_NET_CHK);
+  queue.addQueue(commands[AT_GPS_OFF], AT_GPS_OFF);
+  queue.addQueue(commands[AT_GPS_ON], AT_GPS_ON);
+  queue.addQueue(commands[AT_IP_CHK], AT_IP_CHK);
 }
 
 String gsm_data = "";
@@ -440,7 +513,9 @@ void checkCommandGSM () {
       gsm_data += a;
     } else {
       if (gsm_data.length() > 1) {
-//        Serial.println(gsm_data);
+#ifdef DEBUG_SERIAL
+       Serial.println(gsm_data);
+#endif
         check_CMD(gsm_data);
       }
       gsm_data = "";
@@ -449,6 +524,7 @@ void checkCommandGSM () {
 }
 
 void check_CMD (String str) {
+  ///////////////////////// CHECK COMMANDS ///////////////////////////////////
   if (old_cmd_gsm == AT_CSQ) {
     if (str.indexOf("+CSQ") >= 0) {
       csq = str.substring(str.indexOf("+CSQ: ") + 5, str.indexOf(",")).toInt();
@@ -468,16 +544,16 @@ void check_CMD (String str) {
       internet = false;
     }
   } else if (old_cmd_gsm == AT_LOCATION) {
-    if (str.indexOf(",") >= 0) {
+    if (str.indexOf(",") >= 0 && str.indexOf("+") == -1) {
       location = str;
       location.trim();
     }
   } else if (old_cmd_gsm == AT_COPS) {
     if (str.length() > 5) {
       cops = str.substring(str.indexOf(",\"") + 2, str.length()-1).toInt();
-//      Serial.printf("\nCOPS: %d\n",cops);
     }
   }
+  ////////////////////////// CHECK STRING VALUES //////////////////////////////
   if (str.indexOf("HTTP/1.1  200  OK") >= 0) {
     message_count ++;
     waitHttpAction = 0;
@@ -486,7 +562,6 @@ void check_CMD (String str) {
   else if (str.indexOf("")) {
     failure_pockets ++;
   }
-
   else if (str.indexOf("OK") >= 0 || str.indexOf("+CME") >= 0) {
     next_cmd = true;
     star_project = true;
@@ -502,6 +577,11 @@ void check_CMD (String str) {
     file_name = str.substring(str.indexOf("\"") + 1, str.indexOf(",") - 3);
     file_name.replace('/', '-');
     file_name = "/" + file_name + ".txt";
+  }
+  else if (str.indexOf("HTTP/1.1  400  Bad Request") >= 0) {
+    bad_request = true;
+    queue_stop = true;
+    star_project = false;
   }
 }
 
@@ -530,8 +610,9 @@ void display_update() {
   }
   display.drawString(32, 44, "(M)");
   display.drawString(96, 44, "(T/s)");
-  display.drawString(32, 54, "MC:" + String(httpget_count));
-  display.drawString(96, 54, "HC:" + String(message_count));
+  display.drawString(32, 54, "HC:" + String(httpget_count));
+  display.drawString(96, 54, "MC:" + String(message_count/2));
+  display.drawString(10, 44, "R:" + String(res_counter));
   display.setFont(ArialMT_Plain_24);
   display.drawString(32, 20, String(float(water_level)/100.0));
   display.drawString(96, 20, String(water_cntn));
