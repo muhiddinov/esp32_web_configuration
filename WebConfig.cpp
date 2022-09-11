@@ -194,7 +194,7 @@ void WebConfig::addDescription(String parameter){
         _description[_count].max = (obj.containsKey("max"))?obj["max"] :100;
         _description[_count].min = (obj.containsKey("min"))?obj["min"] : 0;
         if (obj.containsKey("default")) {
-          strlcpy(tmp,obj["default"],30);
+          strlcpy(tmp,obj["default"], 50);
           values[_count] = String(tmp);
         } else {
           values[_count]="0";

@@ -25,6 +25,7 @@
 #define AMET_PIN  34
 #define GSMP_PIN  25
 #define GSMR_PIN  26
+#define FRST_PIN  0
 
 #define AT_CHK      0
 #define AT_CSQ      1
@@ -62,19 +63,23 @@ SoftwareSerial RS485Serial(18, 19);
 SSD1306Wire display (0x3C, 22, 23);
 
 byte readDistance [8] = {0x01, 0x03, 0x00, 0x01, 0x00, 0x01, 0xD5, 0xCA};
-byte ultrasonic_data [7];
 byte readLevel [8] = {0x01, 0x03, 0x00, 0x06, 0x00, 0x01, 0x64, 0x0B};
+
+// byte readDistance [8] = {0x01, 0x03, 0x20, 0x01, 0x00, 0x02, 0x9E, 0x0B};
+// byte readLevel [8] = {0x01, 0x03, 0x20, 0x02, 0x00, 0x02, 0x6E, 0x0B};
+byte ultrasonic_data [7];
+
 uint8_t _counter_httpget = 0, prgs = 0;
 uint8_t old_cmd_gsm = 0, csq = 0, httpget_time = 0;
-uint16_t distance = 0, cops = 0;
+uint16_t distance = 0, cops = 0, err_http_count = 0;
 uint16_t mcc_code[] = {43401, 43402, 43403, 43404, 43405, 43406, 43407, 43408, 43409};
 uint32_t per_hour_time = 0, per_minute_time = 0, per_second_time = 0, per_mill_time = 0;
-uint32_t vcounter = 0, curtime_cmd = 0, res_counter = 0;
+uint32_t vcounter = 0, curtime_cmd = 0, res_counter = 0, frst_timer = 0;
 uint32_t message_count = 0, httpget_count = 0, next_cmd_time = 0;
 String location = "00.0000,00.0000", ip_addr = "0.0.0.0", device_id = "", server_url = "", server_url2 = "";
 String sopn[] = {"Buztel", "Uzmacom", "UzMobile", "Beeline", "Ucell", "Perfectum", "UMS", "UzMobile", "EVO"};
 String file_name = "", gsm_data = "";
-bool sdmmc_detect = 0, gps_state = 0;
+bool sdmmc_detect = 0, gps_state = 0, frst_btn = 0;
 bool next_cmd = true, waitHttpAction = false, star_project = false, device_lost = 0;
 bool internet = false, queue_stop = 0;
 float voltage = 0.0, tmp = 0.0, hmt = 0.0, water_level = 0.0;
@@ -115,7 +120,7 @@ String params = "["
     "'name':'server_url2',"
     "'label':'URL2 server',"
     "'type':"+String(INPUTTEXT)+","
-    "'default':'http://...'"
+    "'default':''"
   "},"
   "{"
     "'name':'timeout',"
@@ -125,7 +130,7 @@ String params = "["
   "},"
   "{"
     "'name':'fixing',"
-    "'label':'Tuzatish',"
+    "'label':'Tuzatish (cm)',"
     "'type':"+String(INPUTTEXT)+","
     "'default':'0'"
   "}"
@@ -259,6 +264,7 @@ void setup() {
   pinMode(AMET_PIN, INPUT);
   pinMode(GSMP_PIN, OUTPUT);
   pinMode(GSMR_PIN, OUTPUT);
+  pinMode(FRST_PIN, INPUT_PULLUP);
   digitalWrite(GSMR_PIN, 1);
   gsmSerial.begin(9600);
   RS485Serial.begin(9600);
@@ -318,8 +324,6 @@ void setup() {
   conf.addStatistics("ANT Signal", "29");                             // 7 - index ANT
   conf.addStatistics("Suv sarfi", "0");                               // 8 - index Suv sarfi
   conf.addStatistics("Suv tahi", "0");                                // 9 - index Suv sathi
-  conf.addStatistics("URL ERR", "www.aakaa.uz");                      // 10 - index Suv sarfi
-  conf.addStatistics("URL SCS", "www.aakaa.uz");                      // 11 - index Suv sathi
   conf.setDescription(params);
   conf.readConfig();
   fix_length = conf.getInt("fixing");
@@ -350,7 +354,26 @@ void setup() {
 
 void loop() {
   server.handleClient();
-  bool check_net = internet;
+  // Sozlamalarni tozalash
+  if (!digitalRead(FRST_PIN) && !frst_btn) {
+    frst_btn = 1;
+    frst_timer = millis()/1000;
+  } else if (!digitalRead(FRST_PIN) && frst_btn) {
+    if (millis()/1000 - frst_timer >= 10) {
+      frst_timer = 0;
+      digitalWrite(GSMR_PIN, 1);
+      conf.deleteConfig(CONFFILE);
+      conf.deleteConfig(CONFTABLE);
+      display.clear();
+      display.drawXbm(14, 4, AKA_Logo_width, AKA_Logo_height, AKA_Logo_bits);
+      display.display();
+      delay(5000);
+      digitalWrite(GSMR_PIN, 0);
+      esp_restart();
+    }
+  } else if (digitalRead(FRST_PIN)) {
+    frst_btn = 0;
+  }
   // har 1 sekundda 1 marta ishlash;
   if (millis() - per_second_time >= 1000) {
     per_second_time = millis();
@@ -400,7 +423,7 @@ void loop() {
     hmt = dht.readHumidity();
     conf.setStatistics(1, "<a href=https://maps.google.com?q="+location + ">"+location+"</a>");                        // 1 - index Location
     conf.setStatistics(2, ip_addr);                         // 2 - index IP
-    conf.setStatistics(3, String(message_count/6));           // 3 - index Counter
+    conf.setStatistics(3, String(message_count) + " - E(" + String(int(err_http_count) * -1) + ")");           // 3 - index Counter
     conf.setStatistics(4, String(tmp) + " C");
     conf.setStatistics(5, String(hmt) + " %");
     conf.setStatistics(6, String(v_percent) + "%");
@@ -408,22 +431,23 @@ void loop() {
     conf.setStatistics(7, String(dbm) + " dBm");
     conf.setStatistics(8, String(water_cntn) + " T/s");
     conf.setStatistics(9, String(water_level) + " cm");
-    conf.setStatistics(11, server_url + make_param());
     if (next_cmd && !waitHttpAction && !queue_stop) {
       queue.addQueue(commands[AT_CSQ], AT_CSQ);
       queue.addQueue(commands[AT_NET_CHK], AT_NET_CHK);
       queue.addQueue(commands[AT_CCLK], AT_CCLK);
-      if (ip_addr == "0.0.0.0") queue.addQueue(commands[AT_IP_CHK], AT_IP_CHK);
       queue.addQueue(commands[AT_LOCATION], AT_LOCATION);
       if (!internet) {
         queue.addQueue(commands[AT_NET_OFF], AT_NET_OFF);
         queue.addQueue(commands[AT_APN], AT_APN);
         queue.addQueue(commands[AT_NET_ON], AT_NET_ON);
+        queue.addQueue(commands[AT_IP_CHK], AT_IP_CHK);
       }
     }
     if (_counter_httpget >= httpget_time && !queue_stop && internet) {
       queue.addQueue(commands[AT_HTTPGET] + server_url + make_param() + "\"", AT_HTTPGET);
-      queue.addQueue(commands[AT_HTTPGET] + server_url2 + make_param() + "\"", AT_HTTPGET);
+      if (server_url2.length() > 5) {
+        queue.addQueue(commands[AT_HTTPGET] + server_url2 + make_param() + "\"", AT_HTTPGET);
+      }
       if (sdmmc_detect && file_name.length() > 1) {
 //        appendFile(SD_MMC, file_name.c_str(), make_api().c_str());
       }
@@ -456,7 +480,7 @@ void loop() {
     curtime_cmd = millis();
     queue.sendCmdQueue();
   }
-  if (millis()/1000 - next_cmd_time > 60) {
+  if (millis()/1000 - next_cmd_time > 30) {
     queue_stop = 1;
     next_cmd = 0;
     star_project = 0;
@@ -474,6 +498,8 @@ void loop() {
     waitHttpAction = 0;
     ip_addr = "0.0.0.0";
     queue.init();
+    _counter_httpget = httpget_time;
+    httpget_count = httpget_count - 1;
   }
   checkCommandGSM();
 #ifdef AT_SERIAL
@@ -502,7 +528,6 @@ void check_CMD (String str) {
   if (old_cmd_gsm == AT_CSQ) {
     if (str.indexOf("+CSQ") >= 0) {
       csq = str.substring(str.indexOf("+CSQ: ") + 5, str.indexOf(",")).toInt();
-      return;
     }
   }
   else if (old_cmd_gsm == AT_IP_CHK) {
@@ -510,46 +535,38 @@ void check_CMD (String str) {
       int start_id = str.indexOf("DEFAULT");
       int end_id = str.indexOf("\",0,0");
       ip_addr = str.substring(start_id + 10, end_id);
-      return;
+#ifdef DEBUG_SERIAL
+      Serial.println(ip_addr);
+#endif
     }
   }
   else if (old_cmd_gsm == AT_NET_CHK) {
     if (str.indexOf("+CGACT: 1") >= 0) {
       internet = true;
-      return;
     } else if (str.indexOf("+CGACT: 0") >= 0){
       internet = false;
-      return;
     }
   } else if (old_cmd_gsm == AT_LOCATION) {
-    if (str.indexOf(",") >= 0 && str.indexOf("+") == -1) {
+    if (str.indexOf("+LOCATION: GPS NOT FIX NOW") >= 0) {
+      location = "";
+      gps_state = 0;
+    } else if (str.indexOf(",") >= 0) {
       location = str;
       location.trim();
       gps_state = 1;
-      return;
-    } else if (str.indexOf("+LOCATION: GPS NOT FIX NOW")) {
-      location = "";
-      gps_state = 0;
-      return;
     }
   } else if (old_cmd_gsm == AT_COPS) {
     if (str.length() > 5) {
       cops = str.substring(str.indexOf(",\"") + 2, str.length()-1).toInt();
-      return;
     }
   } else if (old_cmd_gsm == AT_HTTPGET) {
-    if (str.indexOf("HTTP/1.1  200  OK") >= 0 || str.indexOf("Server:") >= 0 || str.indexOf("OK") >= 0) {
+    if (str.indexOf("HTTP/1.1  200") >= 0) {
       message_count ++;
       waitHttpAction = 0;
-      return;
     }
     else if (str.indexOf("HTTP/1.1  400") >= 0) {
-      conf.setStatistics(10, server_url + make_param());
-      digitalWrite(GSMR_PIN, 1);
-      delay(2000);
-      digitalWrite(GSMR_PIN, 0);
-      esp_restart();
-      return;
+      err_http_count ++;
+      waitHttpAction = 0;
     }
   } else if (old_cmd_gsm == AT_CCLK) {
     if (str.indexOf("+CCLK:") >= 0) {
@@ -582,6 +599,9 @@ void display_update() {
   if (sig < 0) sig = 0;
   display.drawFastImage(8, 2, 8, 8, signal_symbol[sig]);
   display.drawFastImage(20, 2, 8, 8, gprson_symbol);
+  if (gps_state) {
+    display.drawFastImage(36, 2, 8, 8, gpson_symbol);
+  }
   if (internet) {
     display.drawFastImage(28, 2, 8, 8, internet_symbol);
   }
@@ -598,8 +618,7 @@ void display_update() {
   display.drawString(32, 44, "(M)");
   display.drawString(96, 44, "(T/s)");
   display.drawString(32, 54, "HC:" + String(httpget_count));
-  display.drawString(96, 54, "MC:" + String(message_count/6));
-  display.drawString(10, 44, "R:" + String(res_counter));
+  display.drawString(96, 54, "MC:" + String(message_count) + " " + String(int(err_http_count) * -1));
   display.setFont(ArialMT_Plain_24);
   display.drawString(32, 20, String(float(water_level)/100.0));
   display.drawString(96, 20, String(water_cntn));

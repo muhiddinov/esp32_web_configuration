@@ -55,6 +55,17 @@ const uint8_t internet_symbol[8] = {
   B00000000,
 };
 
+const uint8_t gpson_symbol[8] = {
+  B00000000,
+  B00000000,
+  B10100000,
+  B01111111,
+  B10100110,
+  B00000100,
+  B00000000,
+  B00000000,
+};
+
 const uint8_t signal_symbol[4][8] = {
   {
     B00000000,
