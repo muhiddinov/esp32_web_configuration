@@ -62,11 +62,11 @@ SoftwareSerial gsmSerial(33, 32);
 SoftwareSerial RS485Serial(18, 19);
 SSD1306Wire display (0x3C, 22, 23);
 
-byte readDistance [8] = {0x01, 0x03, 0x00, 0x01, 0x00, 0x01, 0xD5, 0xCA};
-byte readLevel [8] = {0x01, 0x03, 0x00, 0x06, 0x00, 0x01, 0x64, 0x0B};
+// byte readDistance [8] = {0x01, 0x03, 0x00, 0x01, 0x00, 0x01, 0xD5, 0xCA};
+// byte readLevel [8] = {0x01, 0x03, 0x00, 0x06, 0x00, 0x01, 0x64, 0x0B};
 
-// byte readDistance [8] = {0x01, 0x03, 0x20, 0x01, 0x00, 0x02, 0x9E, 0x0B};
-// byte readLevel [8] = {0x01, 0x03, 0x20, 0x02, 0x00, 0x02, 0x6E, 0x0B};
+byte readDistance [8] = {0x01, 0x03, 0x20, 0x01, 0x00, 0x02, 0x9E, 0x0B};
+byte readLevel [8] = {0x01, 0x03, 0x20, 0x02, 0x00, 0x02, 0x6E, 0x0B};
 byte ultrasonic_data [7];
 
 uint8_t _counter_httpget = 0, prgs = 0;
@@ -90,13 +90,13 @@ String params = "["
     "'name':'ssid',"
     "'label':'WLAN nomi',"
     "'type':"+String(INPUTTEXT)+","
-    "'default':'AKA-AP'"
+    "'default':'AQILLI SUV'"
   "},"
   "{"
     "'name':'pwd',"
     "'label':'WLAN paroli',"
     "'type':"+String(INPUTPASSWORD)+","
-    "'default':'salomaka'"
+    "'default':'12345678'"
   "},"
   "{"
     "'name':'username',"
@@ -108,7 +108,7 @@ String params = "["
     "'name':'password',"
     "'label':'WEB parol',"
     "'type':"+String(INPUTPASSWORD)+","
-    "'default':'esp32'"
+    "'default':'admin'"
   "},"
   "{"
     "'name':'server_url',"
@@ -225,8 +225,12 @@ float fmap(float x, float in_min, float in_max, float out_min, float out_max) {
   return float((x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min);
 }
 
+// String make_param() {
+//   return ("?id=" + device_id + "&location={" + location + "}&data=" + String(water_cntn) + "&temperature=" + String(tmp) + "&humidity=" + String(hmt) + "&power=" + String(int(voltage)));
+// }
+
 String make_param() {
-  return ("?id=" + device_id + "&location={" + location + "}&data=" + String(water_cntn) + "&temperature=" + String(tmp) + "&humidity=" + String(hmt) + "&power=" + String(int(voltage)));
+  return ("?id=" + device_id + "&water_level=" + String(water_level) + "&water_volume=" + String(water_cntn) + "&temperature=" + String(tmp) + "&humidity=" + String(hmt) + "&power=" + String(int(voltage)));
 }
 
 void drawProgressBar(int progress) {
